@@ -1,11 +1,12 @@
 import json
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from http.cookies import SimpleCookie
+from pathlib import Path
 
-from session_fixtures import MAX_CASES, OUTCOMES, generate_fixtures, verify_fixtures
+from session_fixtures import MAX_CASES, OUTCOMES, check_cookie, generate_fixtures, verify_fixtures
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +39,61 @@ class FixtureTests(unittest.TestCase):
         fixtures["sessions"][revoked]["expires_at"] = fixtures["reference_time"] - 1
         self.assertEqual(verify_fixtures(fixtures), (3, []))
 
+    def test_cookie_headers_parse_and_only_active_session_resolves_an_account(self):
+        fixtures = generate_fixtures(6, seed=42)
+        for case in fixtures["cases"]:
+            with self.subTest(outcome=case["expected"]):
+                header = case["cookie_header"]
+                if header is not None:
+                    parsed = SimpleCookie(header)
+                    self.assertEqual(list(parsed), ["fixture_session"])
+                    self.assertEqual(parsed["fixture_session"].value, case["cookie"])
+
+                account = "fixture_account_00001" if case["expected"] == "active" else None
+                self.assertEqual(case["expected_account_id"], account)
+                self.assertEqual(check_cookie(fixtures, header), (case["expected"], account))
+
+    def test_check_rejects_non_fixture_headers(self):
+        fixtures = generate_fixtures(1, seed=42)
+        header = fixtures["cases"][0]["cookie_header"]
+        for invalid in (
+            fixtures["cases"][0]["cookie"],
+            "other_session=fixture_invalid",
+            f"{header}; other=value",
+            f"{header}\r\nX-Test: value",
+        ):
+            with self.subTest(header=invalid):
+                with self.assertRaisesRegex(ValueError, "Cookie header must be one"):
+                    check_cookie(fixtures, invalid)
+
+    def test_verify_detects_account_mismatch(self):
+        fixtures = generate_fixtures(1, seed=42)
+        session = next(iter(fixtures["sessions"].values()))
+        session["account_id"] = "fixture_account_99999"
+        total, mismatches = verify_fixtures(fixtures)
+        self.assertEqual(total, 1)
+        self.assertEqual(
+            mismatches,
+            ["Case 1 expected account 'fixture_account_00001' and got 'fixture_account_99999'."],
+        )
+
+    def test_verify_rejects_header_that_does_not_match_cookie(self):
+        fixtures = generate_fixtures(2, seed=42)
+        fixtures["cases"][0]["cookie_header"] = fixtures["cases"][1]["cookie_header"]
+        with self.assertRaisesRegex(ValueError, "requires a cookie_header matching"):
+            verify_fixtures(fixtures)
+
+    def test_version_one_fixtures_still_verify(self):
+        cookie = "fixture_" + "0" * 32
+        fixtures = {
+            "version": 1,
+            "reference_time": 1,
+            "sessions": {cookie: {"expires_at": 2, "revoked": False}},
+            "cases": [{"cookie": cookie, "expected": "active"}],
+        }
+        self.assertEqual(verify_fixtures(fixtures), (1, []))
+        self.assertEqual(check_cookie(fixtures, f"fixture_session={cookie}"), ("active", None))
+
     def test_reports_mismatch_without_echoing_cookie(self):
         fixtures = generate_fixtures(1, seed=42)
         fixtures["cases"][0]["expected"] = "revoked"
@@ -54,13 +110,14 @@ class FixtureTests(unittest.TestCase):
     def test_rejects_invalid_fixture_structure(self):
         for field, value in (
             ("version", True),
-            ("version", 2),
+            ("version", 3),
             ("reference_time", False),
             ("sessions", []),
             ("sessions", {"arbitrary-input": {"expires_at": 0, "revoked": False}}),
             ("cases", []),
             ("cases", [{"expected": "missing"}]),
             ("cases", [{"cookie": None, "expected": ["missing"]}]),
+            ("cases", [{"cookie": None, "expected": "missing", "cookie_header": None}]),
         ):
             with self.subTest(field=field, value=value):
                 fixtures = generate_fixtures(1, seed=42)
@@ -72,6 +129,11 @@ class FixtureTests(unittest.TestCase):
         session = next(iter(fixtures["sessions"].values()))
         session["revoked"] = 0
         with self.assertRaisesRegex(ValueError, "Session records"):
+            verify_fixtures(fixtures)
+
+        session["revoked"] = False
+        session["account_id"] = "arbitrary-account"
+        with self.assertRaisesRegex(ValueError, "synthetic account_id"):
             verify_fixtures(fixtures)
 
 
@@ -112,6 +174,28 @@ class CommandTests(unittest.TestCase):
         malformed = self.run_cli("verify", input_text="{")
         self.assertEqual(malformed.returncode, 2)
         self.assertTrue(malformed.stderr)
+
+    def test_check_reports_outcome_and_account_on_the_command_line(self):
+        fixtures = generate_fixtures(6, seed=42)
+        fixture_json = json.dumps(fixtures)
+        for case in (fixtures["cases"][0], fixtures["cases"][3]):
+            with self.subTest(outcome=case["expected"]):
+                checked = self.run_cli(
+                    "check", "-", "--cookie-header", case["cookie_header"], input_text=fixture_json
+                )
+                self.assertEqual(checked.returncode, 0, checked.stderr)
+                self.assertEqual(
+                    json.loads(checked.stdout),
+                    {"outcome": case["expected"], "account_id": case["expected_account_id"]},
+                )
+
+        missing = self.run_cli("check", "-", input_text=fixture_json)
+        self.assertEqual(missing.returncode, 0, missing.stderr)
+        self.assertEqual(json.loads(missing.stdout), {"outcome": "missing", "account_id": None})
+
+        invalid = self.run_cli("check", "-", "--cookie-header", "invalid", input_text=fixture_json)
+        self.assertEqual(invalid.returncode, 2)
+        self.assertIn("Cookie header must be one", invalid.stderr)
 
     def test_rejects_invalid_count_and_oversized_input(self):
         bad_count = self.run_cli("generate", "--count", "0")

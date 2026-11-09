@@ -2,10 +2,10 @@
 
 import argparse
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
-from session_fixtures import MAX_CASES, generate_fixtures, verify_fixtures
+from session_fixtures import MAX_CASES, check_cookie, generate_fixtures, verify_fixtures
 
 
 MAX_INPUT_BYTES = 4 * 1024 * 1024
@@ -40,6 +40,10 @@ def main(argv: list[str] | None = None) -> int:
         "file", nargs="?", default="-", help="path to fixture JSON (default stdin)"
     )
 
+    check = commands.add_parser("check", help="Resolve one synthetic cookie in the fixture store")
+    check.add_argument("file", help="path to fixture JSON (use - for stdin)")
+    check.add_argument("--cookie-header", help="fixture Cookie header value (omit for missing)")
+
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()
@@ -51,7 +55,13 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(fixtures, indent=2))
             return 0
 
-        total, mismatches = verify_fixtures(read_fixtures(args.file))
+        fixtures = read_fixtures(args.file)
+        if args.command == "check":
+            outcome, account_id = check_cookie(fixtures, args.cookie_header)
+            print(json.dumps({"outcome": outcome, "account_id": account_id}))
+            return 0
+
+        total, mismatches = verify_fixtures(fixtures)
     except (OSError, ValueError, RecursionError) as error:
         print(error, file=sys.stderr)
         return 2
