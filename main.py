@@ -29,11 +29,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     commands = parser.add_subparsers(dest="command")
 
-    generate = commands.add_parser("generate", help="Write fixture JSON to stdout")
+    generate = commands.add_parser("generate", help="Write active session fixtures to stdout")
     generate.add_argument(
         "--count", type=int, default=12, help=f"case count from 1 to {MAX_CASES:,} (default 12)"
     )
     generate.add_argument("--seed", type=int, help="integer seed for repeatable fixtures")
+    generate.add_argument(
+        "--all-outcomes", action="store_true", help="cycle through all six fixture outcomes"
+    )
 
     verify = commands.add_parser("verify", help="Check the expected outcomes in fixture JSON")
     verify.add_argument(
@@ -51,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.command == "generate":
-            fixtures = generate_fixtures(args.count, args.seed)
+            fixtures = generate_fixtures(args.count, args.seed, all_outcomes=args.all_outcomes)
             print(json.dumps(fixtures, indent=2))
             return 0
 

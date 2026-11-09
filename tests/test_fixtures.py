@@ -14,11 +14,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class FixtureTests(unittest.TestCase):
     def test_seed_reproduces_batch_and_covers_all_outcomes(self):
-        fixtures = generate_fixtures(12, seed=42)
-        self.assertEqual(fixtures, generate_fixtures(12, seed=42))
-        self.assertNotEqual(fixtures, generate_fixtures(12, seed=43))
+        fixtures = generate_fixtures(12, seed=42, all_outcomes=True)
+        self.assertEqual(fixtures, generate_fixtures(12, seed=42, all_outcomes=True))
+        self.assertNotEqual(fixtures, generate_fixtures(12, seed=43, all_outcomes=True))
         self.assertEqual([case["expected"] for case in fixtures["cases"]], list(OUTCOMES) * 2)
         self.assertEqual(verify_fixtures(fixtures), (12, []))
+
+        active = generate_fixtures(2, seed=42)
+        self.assertEqual(
+            active["cases"], [case for case in fixtures["cases"] if case["expected"] == "active"]
+        )
 
     def test_count_bounds(self):
         for count in (1, MAX_CASES):
@@ -32,7 +37,7 @@ class FixtureTests(unittest.TestCase):
                     generate_fixtures(count)
 
     def test_expiry_boundary_and_revocation_priority(self):
-        fixtures = generate_fixtures(3, seed=42)
+        fixtures = generate_fixtures(3, seed=42, all_outcomes=True)
         active, expired, revoked = [case["cookie"] for case in fixtures["cases"]]
         fixtures["sessions"][active]["expires_at"] = fixtures["reference_time"] + 1
         fixtures["sessions"][expired]["expires_at"] = fixtures["reference_time"]
@@ -40,7 +45,7 @@ class FixtureTests(unittest.TestCase):
         self.assertEqual(verify_fixtures(fixtures), (3, []))
 
     def test_cookie_headers_parse_and_only_active_session_resolves_an_account(self):
-        fixtures = generate_fixtures(6, seed=42)
+        fixtures = generate_fixtures(6, seed=42, all_outcomes=True)
         for case in fixtures["cases"]:
             with self.subTest(outcome=case["expected"]):
                 header = case["cookie_header"]
@@ -150,7 +155,10 @@ class CommandTests(unittest.TestCase):
     def test_generate_and_verify_from_stdin_and_file(self):
         generated = self.run_cli("generate", "--count", "18", "--seed", "42")
         self.assertEqual(generated.returncode, 0, generated.stderr)
-        self.assertEqual(len(json.loads(generated.stdout)["cases"]), 18)
+        fixtures = json.loads(generated.stdout)
+        self.assertEqual(len(fixtures["cases"]), 18)
+        self.assertEqual(len(fixtures["sessions"]), 18)
+        self.assertEqual({case["expected"] for case in fixtures["cases"]}, {"active"})
 
         verified = self.run_cli("verify", input_text=generated.stdout)
         self.assertEqual(verified.returncode, 0, verified.stderr)
@@ -176,8 +184,11 @@ class CommandTests(unittest.TestCase):
         self.assertTrue(malformed.stderr)
 
     def test_check_reports_outcome_and_account_on_the_command_line(self):
-        fixtures = generate_fixtures(6, seed=42)
-        fixture_json = json.dumps(fixtures)
+        generated = self.run_cli("generate", "--count", "6", "--seed", "42", "--all-outcomes")
+        self.assertEqual(generated.returncode, 0, generated.stderr)
+        fixture_json = generated.stdout
+        fixtures = json.loads(fixture_json)
+        self.assertEqual([case["expected"] for case in fixtures["cases"]], list(OUTCOMES))
         for case in (fixtures["cases"][0], fixtures["cases"][3]):
             with self.subTest(outcome=case["expected"]):
                 checked = self.run_cli(

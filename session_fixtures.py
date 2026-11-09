@@ -35,7 +35,9 @@ class FixtureSet(TypedDict):
     cases: list[Case]
 
 
-def generate_fixtures(count: int, seed: int | None = None) -> FixtureSet:
+def generate_fixtures(
+    count: int, seed: int | None = None, *, all_outcomes: bool = False
+) -> FixtureSet:
     if type(count) is not int or not 1 <= count <= MAX_CASES:
         raise ValueError(f"Count must be between 1 and {MAX_CASES:,}.")
 
@@ -43,7 +45,9 @@ def generate_fixtures(count: int, seed: int | None = None) -> FixtureSet:
     sessions: dict[str, Session] = {}
     cases: list[Case] = []
 
-    for index in range(count):
+    # A seed produces the same active cookies in either mode.
+    step = 1 if all_outcomes else len(OUTCOMES)
+    for index in range(0, count * step, step):
         expected = OUTCOMES[index % len(OUTCOMES)]
         cookie: str | None = f"fixture_{batch_id}{index:016x}"
         account_id = None

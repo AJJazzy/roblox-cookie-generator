@@ -12,9 +12,12 @@ python3 main.py generate --count 24 --seed 42 > fixtures.json
 python3 main.py verify fixtures.json
 ```
 
-`generate` writes JSON to standard output. It defaults to 12 cases and accepts
-1 to 10,000. Use the same count and integer seed to reproduce a batch. Omit the
-seed to generate a new batch.
+`generate` writes active session fixtures as JSON to standard output. It
+defaults to 12 cases and accepts 1 to 10,000. Use the same options and integer
+seed to reproduce a batch. Omit the seed to generate a new batch.
+
+Use `--all-outcomes` when you want the batch to cycle through active, expired,
+revoked, unknown, missing, and malformed cases.
 
 You can also verify a batch without creating a file.
 
